@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "inpost.air",
+  "name": "InPost air",
+  "version": "1.0.0",
+  "author": "Konrad Sałkowski",
+  "description": "Air quality and weather sensors from an InPost paczkomat",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "AirWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "InPost air quality",
+    "description": "Air quality index plus temperature, pressure and humidity from an InPost paczkomat sensor",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "center"
+  }
+}
