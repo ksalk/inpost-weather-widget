@@ -54,11 +54,30 @@ function round1(value) {
   return (Math.round(n * 10) / 10).toFixed(1)
 }
 
-// Parse a raw fetch response into
-//   { level: "VERY_GOOD", sensors: { TEMPERATURE: 18.65, ... } }
-// or null when nothing usable arrived (404 HTML, malformed JSON, an empty
-// sensor list and no level). A missing level with usable sensors still
-// parses — the pill then shows the readings with an unknown-state face.
+// The fetch runs through
+//   curl -sS --max-time 10 -H x-requested-with: XMLHttpRequest -w '\n%{http_code}' <url>
+// so the collected stdout is the response body with the HTTP status code
+// appended on its own final line. splitResponse separates the two.
+function splitResponse(raw) {
+  var text = String(raw === undefined || raw === null ? "" : raw)
+  var code = 0
+  var idx = text.lastIndexOf("\n")
+  if (idx !== -1) {
+    var tail = trimmed(text.slice(idx + 1))
+    if (/^\d{3}$/.test(tail)) {
+      code = parseInt(tail, 10)
+      text = text.slice(0, idx)
+    }
+  }
+  return { code: code, body: text }
+}
+
+// Parse a response body into
+//   { level: "VERY_GOOD", sensors: { TEMPERATURE: 18.65, ... }, message: "" }
+// The message is InPost's explanation string — on error bodies like
+// {"message":"Air sensors are not available."} it is the only content, and
+// the caller decides what an unusable reading means. Returns null only when
+// the body is not JSON at all (redirect HTML, empty, garbage).
 function parseResponse(raw) {
   var data
   try {
@@ -77,10 +96,11 @@ function parseResponse(raw) {
     if (name && !isNaN(value)) sensors[name] = value
   }
 
-  var level = trimmed(data.air_index_level).toUpperCase()
-  if (!level && !hasReadings(sensors)) return null
-
-  return { level: level, sensors: sensors }
+  return {
+    level: trimmed(data.air_index_level).toUpperCase(),
+    sensors: sensors,
+    message: trimmed(data.message)
+  }
 }
 
 function hasReadings(sensors) {
@@ -104,11 +124,18 @@ function pill(state) {
   return parts.join(" · ")
 }
 
-// Hover tooltip: point, level, readings with units, last update time.
+// Hover tooltip: point, level, readings with units, last update time. When
+// the fetch came back with InPost's explanation instead of data ("Air sensors
+// are not available.", "Point not found."), surface that message so a broken
+// config and a sleeping feed are told apart. A successful response also
+// carries a `message`, but that one is just provenance ("Data source: Drupal
+// point_entity_field_data table") and would only be noise here.
 function tooltip(state, pointName, updatedAt) {
   var out = [pointName && String(pointName) !== "" ? String(pointName) : "paczkomat"]
   if (!state) {
     out.push("no data")
+  } else if (!state.level && !hasReadings(state.sensors)) {
+    out.push(state.message ? "InPost: " + state.message : "no data")
   } else {
     var meta = levelMeta(state.level)
     out.push(meta ? meta.text : "air level unknown")
@@ -132,6 +159,7 @@ if (typeof module !== "undefined") {
     levelMeta: levelMeta,
     faceFor: faceFor,
     round1: round1,
+    splitResponse: splitResponse,
     parseResponse: parseResponse,
     hasReadings: hasReadings,
     pill: pill,

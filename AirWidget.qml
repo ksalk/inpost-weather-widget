@@ -22,9 +22,10 @@ BarWidget {
   readonly property string url: "https://inpost.pl/shipx-point-data/"
     + encodeURIComponent(pointId) + "/" + encodeURIComponent(pointName || pointId) + "/air_index_level"
 
-  // Last-good parsed response, kept across failed fetches so the pill never
-  // blanks out over a transient network error. Named `readings` — `state` is
-  // already a QQuickItem property.
+  // Last parsed response, kept across failed fetches so the pill never blanks
+  // out over a transient network error. A response that only carries InPost's
+  // explanation is kept too — see the stdout handler. Named `readings` —
+  // `state` is already a QQuickItem property.
   property var readings: null
   property string updatedAt: ""
   property bool fetchFailed: false
@@ -39,9 +40,13 @@ BarWidget {
   function refresh() {
     if (!pointId) return
     if (fetchProc.running) return
-    fetchedThisRun = false
-    fetchProc.command = ["curl", "-fsS", "--max-time", "10",
-      "-H", "x-requested-with: XMLHttpRequest", root.url]
+    outcome = outcomeTransport
+    // No -f: it suppresses the body on HTTP >= 400, which is exactly the body
+    // that explains *why* there are no readings. -w appends the status on its
+    // own final line instead; Model.splitResponse separates the two.
+    fetchProc.command = ["curl", "-sS", "--max-time", "10",
+      "-H", "x-requested-with: XMLHttpRequest",
+      "-w", "\\n%{http_code}", root.url]
     fetchProc.running = true
   }
 
@@ -63,10 +68,14 @@ BarWidget {
     }
   }
 
-  // True once this run's stdout parsed into usable data. Checked on exit:
-  // curl -f only fails on HTTP >= 400, so a 302 redirect body (exit 0) has
-  // to be caught here as well.
-  property bool fetchedThisRun: false
+  // How the last run ended. Only a transport failure is worth an immediate
+  // backoff retry; when InPost answers with an explanation ("Air sensors are
+  // not available.", "Point not found.") retrying would only get the same
+  // answer, so we adopt that state and leave it to the refresh timer.
+  readonly property string outcomeTransport: "transport"
+  readonly property string outcomeAnswered: "answered"
+  readonly property string outcomeOk: "ok"
+  property string outcome: outcomeTransport
 
   Process {
     id: fetchProc
@@ -75,19 +84,37 @@ BarWidget {
       waitForEnd: true
 
       onStreamFinished: {
-        var parsed = Model.parseResponse(text)
-        if (parsed) {
-          root.readings = parsed
-          root.updatedAt = Qt.formatDateTime(new Date(), "HH:mm")
+        // The body is the authoritative signal here, so the status that
+        // splitResponse peels off is not branched on: an unreadable body is
+        // either a transport failure or an error page, and both are retryable,
+        // while a body we can read tells us in its own message whether a
+        // retry could ever help.
+        var parsed = Model.parseResponse(Model.splitResponse(text).body)
+        if (!parsed) return
+
+        // Adopt whatever came back, including a state that carries only
+        // InPost's message — Model.tooltip renders that as the reason there
+        // are no readings, which is what makes a misconfigured pointId
+        // distinguishable from a sleeping feed.
+        root.readings = parsed
+        root.updatedAt = Qt.formatDateTime(new Date(), "HH:mm")
+
+        if (Model.hasReadings(parsed.sensors)) {
+          root.outcome = root.outcomeOk
           root.fetchFailed = false
           root.retries = 0
-          root.fetchedThisRun = true
+        } else {
+          root.outcome = root.outcomeAnswered
+          root.fetchFailed = true
         }
       }
     }
 
-    onExited: function(exitCode) {
-      if (exitCode !== 0 || !root.fetchedThisRun) root.scheduleRetry()
+    // Only a run that produced no readable body is worth retrying. curl -sS
+    // exits 0 whenever the transfer itself completed, so the exit code only
+    // ever covers transport — every other outcome has already set fetchFailed.
+    onExited: function() {
+      if (root.outcome === root.outcomeTransport) root.scheduleRetry()
     }
   }
 
@@ -120,6 +147,17 @@ BarWidget {
   // Horizontally: a text label in a padded slot (clock-widget pattern).
   // Vertically: just the face glyph, icon-sized.
   readonly property string verticalGlyph: Model.faceFor(readings)
+
+  // The bar sizes each slot from the widget root's implicitWidth, so a
+  // BarWidget that never declares one collapses to zero width and renders
+  // nothing at all. Horizontally it is a text label in a padded slot, so the
+  // open-panel dot takes the label width; vertically it is a single glyph, so
+  // it takes the icon-sized mark (the clock-widget pattern).
+  readonly property real openPanelIndicatorWidth: button.labelWidth
+  readonly property real openPanelIndicatorHeight: Math.max(Style.space(10), Math.round(Style.bar.iconSlot * 0.55))
+
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
 
   WidgetButton {
     id: button

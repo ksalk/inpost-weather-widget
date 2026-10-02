@@ -76,6 +76,21 @@ Because the endpoint is unofficial it may change or disappear without notice;
 on failure the widget keeps the last readings and marks the tooltip, retrying
 a few times before falling back to the refresh timer.
 
+Not every paczkomat has the sensors — InPost answers `404` with
+`{"message": "Air sensors are not available."}` for the ones that do not, and
+`{"message": "Point not found."}` for an id that does not exist. Those bodies
+are read rather than discarded, so the tooltip names the reason instead of
+reporting a bare "no data", and the widget does not retry them (the answer
+would not change; the refresh timer picks it up later). Worth checking a
+locker before wiring it up:
+
+```bash
+curl -sS -w ' [%{http_code}]\n' -H 'x-requested-with: XMLHttpRequest' \
+  'https://inpost.pl/shipx-point-data/<pointId>/<pointName>/air_index_level'
+```
+
+A `200` with an `air_sensors` array is a locker that works.
+
 ## Development
 
 ```
@@ -86,7 +101,7 @@ node --test test/Model.test.mjs   # Model.js unit tests
 ```
 
 To try it live, copy the repo contents into the Omarchy plugins directory —
-the shell hot-reloads on file changes:
+the shell reloads plugin code on file changes:
 
 ```
 rsync -a --delete --exclude .git ./ ~/.config/omarchy/plugins/inpost.air/
@@ -94,6 +109,11 @@ rsync -a --delete --exclude .git ./ ~/.config/omarchy/plugins/inpost.air/
 
 and add `{ "id": "inpost.air", "pointId": "12345", "pointName": "XYZ12AB" }`
 to `bar.layout.center` in `~/.config/omarchy/shell.json`.
+
+If an edit does not show up, run `omarchy restart shell`. A widget that fails
+to compile is dropped silently — its bar slot collapses to zero width and its
+IPC target stops answering, so `omarchy-shell inpost.air refresh` returning
+"Target not found." is the signal that the QML no longer loads.
 
 ## License
 

@@ -29,11 +29,48 @@ test("parseResponse reads level and sensors", () => {
   assert.equal(state.sensors.PM10, 10.666088590753)
 })
 
-test("parseResponse returns null on unusable payloads", () => {
+test("splitResponse separates the body from the appended status code", () => {
+  const ok = Model.splitResponse(SAMPLE + "\n200")
+  assert.equal(ok.code, 200)
+  assert.equal(ok.body, SAMPLE)
+
+  const notFound = Model.splitResponse('{"message":"Point not found."}\n404')
+  assert.equal(notFound.code, 404)
+  assert.equal(Model.parseResponse(notFound.body).message, "Point not found.")
+
+  // An empty body still leaves the status recoverable.
+  assert.deepEqual(Model.splitResponse("\n503"), { code: 503, body: "" })
+})
+
+test("splitResponse leaves a body without a status line alone", () => {
+  // No -w suffix: treat the whole thing as the body and report no status.
+  assert.deepEqual(Model.splitResponse(SAMPLE), { code: 0, body: SAMPLE })
+  // A trailing non-numeric line is body content, not a status.
+  const trailing = Model.splitResponse('{"a":1}\nnot-a-code')
+  assert.equal(trailing.code, 0)
+  assert.equal(trailing.body, '{"a":1}\nnot-a-code')
+  assert.deepEqual(Model.splitResponse(""), { code: 0, body: "" })
+})
+
+test("parseResponse returns null only when the body is not JSON", () => {
   assert.equal(Model.parseResponse(""), null)
   assert.equal(Model.parseResponse("<html>redirect</html>"), null)
-  assert.equal(Model.parseResponse('{"message":"Point not found."}'), null)
-  assert.equal(Model.parseResponse('{"air_index_level":null,"air_sensors":[""]}'), null)
+  assert.equal(Model.parseResponse("not json at all"), null)
+  assert.equal(Model.parseResponse("null"), null)
+})
+
+test("parseResponse keeps InPost's explanation when it sends no readings", () => {
+  // The whole point of the fetch rewrite: these bodies must survive parsing
+  // so Model.tooltip can say why there is nothing to show, instead of the
+  // widget reporting a bare "no data".
+  const missing = Model.parseResponse('{"message":"Air sensors are not available."}')
+  assert.equal(missing.level, "")
+  assert.deepEqual(missing.sensors, {})
+  assert.equal(missing.message, "Air sensors are not available.")
+  assert.equal(Model.hasReadings(missing.sensors), false)
+
+  const unknown = Model.parseResponse('{"message":"Point not found."}')
+  assert.equal(unknown.message, "Point not found.")
 })
 
 test("parseResponse keeps readings when the level is missing", () => {
@@ -92,5 +129,30 @@ test("tooltip composes point, level, readings and update time", () => {
 
 test("tooltip handles no-data and unnamed points", () => {
   assert.equal(Model.tooltip(null, "", "09:24"), "paczkomat · no data · updated 09:24")
-  assert.equal(Model.tooltip({ level: "", sensors: {} }, "XYZ12AB", ""), "XYZ12AB · air level unknown")
+  // Readings without a level is a different state from no readings at all:
+  // the former still has numbers worth showing.
+  assert.equal(
+    Model.tooltip({ level: "", sensors: { TEMPERATURE: 21.5 } }, "XYZ12AB", ""),
+    "XYZ12AB · air level unknown · 21.5°C"
+  )
+  assert.equal(Model.tooltip({ level: "", sensors: {} }, "XYZ12AB", ""), "XYZ12AB · no data")
+})
+
+test("tooltip reports InPost's explanation when it sends no readings", () => {
+  // The reason the fetch rewrite exists: a sensorless locker or a wrong
+  // pointId has to read as a diagnosable message, not a bare "no data".
+  const missing = Model.parseResponse('{"message":"Air sensors are not available."}')
+  assert.equal(
+    Model.tooltip(missing, "WAW19APP", "13:15"),
+    "WAW19APP · InPost: Air sensors are not available. · updated 13:15"
+  )
+  const unknown = Model.parseResponse('{"message":"Point not found."}')
+  assert.equal(Model.tooltip(unknown, "XYZ12AB", ""), "XYZ12AB · InPost: Point not found.")
+})
+
+test("tooltip omits the provenance message on a successful response", () => {
+  // A good response carries message: "Data source: Drupal ..." — noise in a
+  // tooltip that already says everything useful.
+  const state = Model.parseResponse(SAMPLE)
+  assert.doesNotMatch(Model.tooltip(state, "XYZ12AB", "09:24"), /Data source/)
 })
